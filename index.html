@@ -33,13 +33,13 @@
     align-items:center;
     padding:48px 20px 80px;
   }
-  .wrap{width:100%; max-width:760px;}
+  .wrap{width:100%; max-width:820px;}
 
   header{
     display:flex;
     align-items:baseline;
     justify-content:space-between;
-    margin-bottom:36px;
+    margin-bottom:24px;
     border-bottom:1px solid var(--board-line);
     padding-bottom:18px;
   }
@@ -48,6 +48,19 @@
   .brand h1{font-family:var(--mono); font-size:15px; letter-spacing:2px; font-weight:700; text-transform:uppercase;}
   .route{font-family:var(--mono); font-size:12px; color:var(--ink-dim); letter-spacing:1px;}
   .route b{color:var(--flap-amber); font-weight:500;}
+
+  #banner{
+    display:none;
+    font-family:var(--mono);
+    font-size:12px;
+    background:#241414;
+    border:1px solid #4a2323;
+    color:#f2a5a0;
+    padding:12px 14px;
+    border-radius:8px;
+    margin-bottom:24px;
+    line-height:1.5;
+  }
 
   .dropzone{
     position:relative;
@@ -102,11 +115,15 @@
     margin:40px 0 12px;
     display:flex;
     justify-content:space-between;
+    flex-wrap:wrap;
+    gap:8px;
   }
+  .board-label .counts{display:flex; gap:14px;}
+  .board-label .counts b{color:var(--ink);}
   .queue{border-top:1px solid var(--board-line);}
   .row{
     display:grid;
-    grid-template-columns:1fr auto auto 110px;
+    grid-template-columns:1fr auto auto 120px;
     align-items:center;
     gap:14px;
     padding:16px 6px;
@@ -123,6 +140,7 @@
   .bar-fill{height:100%; width:0%; background:var(--steel-blue); transition:width .3s ease;}
   .row.done .bar-fill{background:var(--arrival-green);}
   .row.error .bar-fill{background:var(--error-red);}
+  .row.queued .bar-fill{background:#3a3a42; width:100%;}
   .status{text-align:right;}
   .btn-dl{
     font-family:var(--mono); font-size:11px; letter-spacing:.5px;
@@ -130,7 +148,13 @@
     padding:6px 10px; border-radius:6px; cursor:pointer;
   }
   .btn-dl:hover{background:var(--arrival-green); color:#04140a;}
+  .btn-dl-all{
+    font-family:var(--mono); font-size:11px; letter-spacing:.5px;
+    background:var(--steel-blue); border:1px solid var(--steel-blue); color:#fff;
+    padding:7px 12px; border-radius:6px; cursor:pointer; margin-top:16px;
+  }
   .pct{color:var(--ink-dim); font-size:11px;}
+  .err-msg{color:var(--error-red); font-size:10px; max-width:150px; text-align:right; white-space:normal;}
 
   .empty{padding:28px 6px; color:var(--ink-dim); font-family:var(--mono); font-size:12px; text-align:center;}
 
@@ -162,9 +186,11 @@
     <div class="route">HEIC/MOV <b>→</b> PNG/MP4</div>
   </header>
 
+  <div id="banner"></div>
+
   <div class="dropzone" id="dropzone">
     <h2>Arrastra tus archivos aquí</h2>
-    <p>o haz clic para buscarlos en tu equipo — el formato de salida se detecta solo</p>
+    <p>o haz clic para buscarlos — puedes soltar 30 o más a la vez, el formato de salida se detecta solo</p>
     <input type="file" id="fileInput" multiple accept=".heic,.heif,.mov,.m4v">
     <div class="formats">
       <span>HEIC</span><span>HEIF</span><span>MOV</span><span>M4V</span>
@@ -178,33 +204,67 @@
 
   <div class="board-label">
     <span>TABLERO DE CONVERSIÓN</span>
-    <span id="countLabel">0 archivos</span>
+    <span class="counts" id="countLabel"><b>0</b>&nbsp;archivos</span>
   </div>
   <div class="queue" id="queue">
     <div class="empty" id="emptyMsg">Aún no hay archivos en cola — arrastra o selecciona arriba.</div>
   </div>
+  <button class="btn-dl-all" id="downloadAllBtn" style="display:none;">Descargar todo (.zip)</button>
 
   <footer>
     <span>Calidad original preservada (remux sin recodificar cuando es posible)</span>
     <span>Procesamiento 100% local, en tu navegador</span>
+    <span>Imágenes en paralelo · videos en fila (un solo motor de FFmpeg)</span>
   </footer>
 
 </div>
 
 <script type="module">
-import heic2any from 'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/+esm';
-import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js';
-import { fetchFile, toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.2/dist/esm/index.js';
-
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
 const queue = document.getElementById('queue');
 let emptyMsg = document.getElementById('emptyMsg');
 const countLabel = document.getElementById('countLabel');
+const banner = document.getElementById('banner');
+const downloadAllBtn = document.getElementById('downloadAllBtn');
 
 const TARGET_MAP = { heic:'PNG', heif:'PNG', mov:'MP4', m4v:'MP4' };
 let fileCount = 0;
+const finishedFiles = []; // {blob, name}
 
+function showBanner(msg){
+  banner.textContent = msg;
+  banner.style.display = 'block';
+}
+
+// ---------- lazy-loaded libraries ----------
+let heic2any = null;
+let FFmpegCtor = null, fetchFile = null, toBlobURL = null;
+let libsReady = false;
+let libsFailed = false;
+
+async function loadLibs(){
+  if (libsReady || libsFailed) return;
+  try {
+    const [heicMod, ffmpegMod, utilMod] = await Promise.all([
+      import('https://cdn.jsdelivr.net/npm/heic2any@0.0.4/+esm'),
+      import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js'),
+      import('https://unpkg.com/@ffmpeg/util@0.12.2/dist/esm/index.js'),
+    ]);
+    heic2any = heicMod.default;
+    FFmpegCtor = ffmpegMod.FFmpeg;
+    fetchFile = utilMod.fetchFile;
+    toBlobURL = utilMod.toBlobURL;
+    libsReady = true;
+  } catch (e) {
+    libsFailed = true;
+    console.error('Fallo al cargar librerías de conversión', e);
+    showBanner('No se pudieron cargar los motores de conversión (revisa tu conexión a internet o si algo bloquea unpkg.com / jsdelivr.net). Detalle: ' + (e && e.message ? e.message : e));
+  }
+}
+loadLibs();
+
+// ---------- ffmpeg singleton (solo se carga si hay un .mov/.m4v) ----------
 let ffmpegInstance = null;
 let ffmpegLoadingPromise = null;
 
@@ -212,11 +272,15 @@ async function getFFmpeg(){
   if (ffmpegInstance) return ffmpegInstance;
   if (!ffmpegLoadingPromise){
     ffmpegLoadingPromise = (async () => {
-      const ffmpeg = new FFmpeg();
-      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      const ffmpeg = new FFmpegCtor();
+      const coreBase = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
+      const ffmpegPkgBase = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/esm';
       await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        coreURL: await toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm'),
+        // clave: el worker propio de ffmpeg.wasm debe cargarse como blob same-origin,
+        // si no, el navegador lo bloquea por ser un worker de otro dominio (unpkg.com)
+        classWorkerURL: await toBlobURL(`${ffmpegPkgBase}/worker.js`, 'text/javascript'),
       });
       ffmpegInstance = ffmpeg;
       return ffmpeg;
@@ -232,8 +296,8 @@ async function convertHeicToPng(file){
 
 async function convertMovToMp4(file, onProgress){
   const ffmpeg = await getFFmpeg();
-  const inputName = 'in_' + Date.now() + '.mov';
-  const outputName = 'out_' + Date.now() + '.mp4';
+  const inputName = 'in_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.mov';
+  const outputName = 'out_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.mp4';
 
   const onProg = ({ progress }) => onProgress(Math.min(Math.max(progress * 100, 0), 99));
   ffmpeg.on('progress', onProg);
@@ -250,10 +314,38 @@ async function convertMovToMp4(file, onProgress){
 
   const data = await ffmpeg.readFile(outputName);
   ffmpeg.off('progress', onProg);
-  await ffmpeg.deleteFile(inputName);
-  await ffmpeg.deleteFile(outputName);
+  await ffmpeg.deleteFile(inputName).catch(()=>{});
+  await ffmpeg.deleteFile(outputName).catch(()=>{});
 
   return new Blob([data.buffer], { type: 'video/mp4' });
+}
+
+// ---------- colas de concurrencia ----------
+// Imágenes: varias a la vez (limita para no saturar memoria del navegador)
+const IMAGE_CONCURRENCY = 3;
+let activeImageJobs = 0;
+const imageQueue = [];
+function scheduleImage(task){
+  return new Promise((resolve, reject) => {
+    imageQueue.push({ task, resolve, reject });
+    pumpImageQueue();
+  });
+}
+function pumpImageQueue(){
+  while (activeImageJobs < IMAGE_CONCURRENCY && imageQueue.length){
+    const { task, resolve, reject } = imageQueue.shift();
+    activeImageJobs++;
+    task().then(resolve, reject).finally(() => { activeImageJobs--; pumpImageQueue(); });
+  }
+}
+
+// Videos: un solo motor de FFmpeg -> se procesan en fila, uno tras otro
+let videoChain = Promise.resolve();
+function scheduleVideo(task, onQueued){
+  onQueued();
+  const result = videoChain.then(() => task());
+  videoChain = result.catch(() => {});
+  return result;
 }
 
 dropzone.addEventListener('click', () => fileInput.click());
@@ -288,11 +380,11 @@ function addRow(file){
       <span class="from">${ext.toUpperCase()}</span><span>→</span><span class="to">${target}</span>
     </div>
     <div class="bar-track"><div class="bar-fill"></div></div>
-    <div class="status"><span class="pct">0%</span></div>
+    <div class="status"><span class="pct">en cola</span></div>
   `;
   queue.appendChild(row);
   fileCount++;
-  countLabel.textContent = fileCount + (fileCount === 1 ? ' archivo' : ' archivos');
+  countLabel.innerHTML = `<b>${fileCount}</b>&nbsp;${fileCount === 1 ? 'archivo' : 'archivos'}`;
 
   processFile(row, file, ext);
 }
@@ -303,16 +395,36 @@ async function processFile(row, file, ext){
   const statusEl = row.querySelector('.status');
   const setProgress = (p) => { fill.style.width = p + '%'; pct.textContent = Math.floor(p) + '%'; };
 
+  await loadLibs();
+  if (libsFailed){
+    row.classList.add('error');
+    statusEl.innerHTML = '<span class="err-msg">Motor no disponible</span>';
+    return;
+  }
+
   try {
     let outBlob, outName;
 
     if (ext === 'heic' || ext === 'heif'){
-      setProgress(20);
-      outBlob = await convertHeicToPng(file);
+      row.classList.add('queued');
+      outBlob = await scheduleImage(async () => {
+        row.classList.remove('queued');
+        setProgress(20);
+        const b = await convertHeicToPng(file);
+        return b;
+      });
       outName = file.name.replace(/\.(heic|heif)$/i, '.png');
     } else if (ext === 'mov' || ext === 'm4v'){
-      if (!ffmpegInstance) pct.textContent = 'cargando motor…';
-      outBlob = await convertMovToMp4(file, setProgress);
+      row.classList.add('queued');
+      pct.textContent = 'en cola';
+      outBlob = await scheduleVideo(
+        async () => {
+          row.classList.remove('queued');
+          if (!ffmpegInstance) pct.textContent = 'cargando motor…';
+          return convertMovToMp4(file, setProgress);
+        },
+        () => {}
+      );
       outName = file.name.replace(/\.(mov|m4v)$/i, '.mp4');
     } else {
       outBlob = file;
@@ -320,6 +432,7 @@ async function processFile(row, file, ext){
     }
 
     setProgress(100);
+    row.classList.remove('queued');
     row.classList.add('done');
     const url = URL.createObjectURL(outBlob);
     statusEl.innerHTML = '';
@@ -331,12 +444,28 @@ async function processFile(row, file, ext){
       a.href = url; a.download = outName; a.click();
     };
     statusEl.appendChild(btn);
+
+    finishedFiles.push({ url, name: outName });
+    if (finishedFiles.length > 1) downloadAllBtn.style.display = 'inline-block';
+
   } catch (err){
-    console.error(err);
+    console.error('Error convirtiendo', file.name, err);
+    row.classList.remove('queued');
     row.classList.add('error');
-    statusEl.innerHTML = '<span style="color:var(--error-red)">Error</span>';
+    const msg = (err && err.message) ? err.message : String(err);
+    statusEl.innerHTML = `<span class="err-msg" title="${msg.replace(/"/g,'')}">Error: ${msg.slice(0,40)}</span>`;
   }
 }
+
+downloadAllBtn.addEventListener('click', () => {
+  // Descarga secuencial simple (sin zip) — cada archivo dispara su propio guardado
+  finishedFiles.forEach(({ url, name }, i) => {
+    setTimeout(() => {
+      const a = document.createElement('a');
+      a.href = url; a.download = name; a.click();
+    }, i * 250);
+  });
+});
 </script>
 </body>
 </html>
