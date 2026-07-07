@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Convertidor · HEIC/MOV → PNG/MP4</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --board-bg:#0c0c0e;
+    --board-panel:#151519;
+    --board-line:#26262c;
+    --ink:#eef0f3;
+    --ink-dim:#9a9aa2;
+    --flap-amber:#f5a623;
+    --flap-amber-dim:#8a5f16;
+    --steel-blue:#4f8ff0;
+    --arrival-green:#5fad82;
+    --error-red:#e0615c;
+    --radius:10px;
+    --mono:'JetBrains Mono', monospace;
+    --sans:'Inter', sans-serif;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{
+    background:var(--board-bg);
+    color:var(--ink);
+    font-family:var(--sans);
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:48px 20px 80px;
+  }
+  .wrap{width:100%; max-width:760px;}
+
+  header{
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    margin-bottom:36px;
+    border-bottom:1px solid var(--board-line);
+    padding-bottom:18px;
+  }
+  .brand{display:flex; align-items:center; gap:10px;}
+  .brand .dot{width:9px; height:9px; border-radius:50%; background:var(--flap-amber); box-shadow:0 0 10px var(--flap-amber);}
+  .brand h1{font-family:var(--mono); font-size:15px; letter-spacing:2px; font-weight:700; text-transform:uppercase;}
+  .route{font-family:var(--mono); font-size:12px; color:var(--ink-dim); letter-spacing:1px;}
+  .route b{color:var(--flap-amber); font-weight:500;}
+
+  .dropzone{
+    position:relative;
+    border:1.5px dashed #3a3a42;
+    border-radius:var(--radius);
+    padding:56px 24px;
+    text-align:center;
+    background:var(--board-panel);
+    transition:border-color .2s ease, background .2s ease;
+    cursor:pointer;
+  }
+  .dropzone.drag{border-color:var(--flap-amber); background:#1a1712;}
+  .dropzone h2{font-size:19px; font-weight:600; margin-bottom:8px;}
+  .dropzone p{color:var(--ink-dim); font-size:13.5px;}
+  .dropzone input{display:none;}
+  .formats{
+    margin-top:22px;
+    display:flex;
+    gap:10px;
+    justify-content:center;
+    flex-wrap:wrap;
+    font-family:var(--mono);
+    font-size:11px;
+  }
+  .formats span{
+    border:1px solid var(--board-line);
+    padding:4px 10px;
+    border-radius:20px;
+    color:var(--ink-dim);
+  }
+
+  .flap-pair{display:flex; align-items:center; gap:10px; justify-content:center; margin-top:24px;}
+  .flap{
+    font-family:var(--mono);
+    font-weight:700;
+    font-size:13px;
+    letter-spacing:1px;
+    background:#000;
+    border:1px solid var(--board-line);
+    border-radius:4px;
+    padding:6px 10px;
+    color:var(--flap-amber);
+  }
+  .flap.target{color:var(--arrival-green);}
+  .flap-arrow{color:var(--ink-dim); font-family:var(--mono); font-size:13px;}
+
+  .board-label{
+    font-family:var(--mono);
+    font-size:11px;
+    letter-spacing:2px;
+    color:var(--ink-dim);
+    margin:40px 0 12px;
+    display:flex;
+    justify-content:space-between;
+  }
+  .queue{border-top:1px solid var(--board-line);}
+  .row{
+    display:grid;
+    grid-template-columns:1fr auto auto 110px;
+    align-items:center;
+    gap:14px;
+    padding:16px 6px;
+    border-bottom:1px solid var(--board-line);
+    font-family:var(--mono);
+    font-size:12.5px;
+  }
+  .row .name{color:var(--ink); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .row .size{color:var(--ink-dim); font-size:11px;}
+  .row .fmt-flow{display:flex; align-items:center; gap:6px; white-space:nowrap;}
+  .row .fmt-flow .from{color:var(--flap-amber-dim);}
+  .row .fmt-flow .to{color:var(--arrival-green);}
+  .bar-track{width:100%; height:5px; background:#1f1f24; border-radius:4px; overflow:hidden;}
+  .bar-fill{height:100%; width:0%; background:var(--steel-blue); transition:width .3s ease;}
+  .row.done .bar-fill{background:var(--arrival-green);}
+  .row.error .bar-fill{background:var(--error-red);}
+  .status{text-align:right;}
+  .btn-dl{
+    font-family:var(--mono); font-size:11px; letter-spacing:.5px;
+    background:transparent; border:1px solid var(--arrival-green); color:var(--arrival-green);
+    padding:6px 10px; border-radius:6px; cursor:pointer;
+  }
+  .btn-dl:hover{background:var(--arrival-green); color:#04140a;}
+  .pct{color:var(--ink-dim); font-size:11px;}
+
+  .empty{padding:28px 6px; color:var(--ink-dim); font-family:var(--mono); font-size:12px; text-align:center;}
+
+  footer{
+    margin-top:44px;
+    display:flex;
+    gap:22px;
+    flex-wrap:wrap;
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--ink-dim);
+  }
+  footer span::before{content:"— "; color:var(--flap-amber-dim);}
+
+  @media (max-width:520px){
+    .row{grid-template-columns:1fr; gap:6px;}
+    .status{text-align:left;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="dot"></div>
+      <h1>Convertidor</h1>
+    </div>
+    <div class="route">HEIC/MOV <b>→</b> PNG/MP4</div>
+  </header>
+
+  <div class="dropzone" id="dropzone">
+    <h2>Arrastra tus archivos aquí</h2>
+    <p>o haz clic para buscarlos en tu equipo — el formato de salida se detecta solo</p>
+    <input type="file" id="fileInput" multiple accept=".heic,.heif,.mov,.m4v">
+    <div class="formats">
+      <span>HEIC</span><span>HEIF</span><span>MOV</span><span>M4V</span>
+    </div>
+    <div class="flap-pair">
+      <div class="flap">HEIC</div><span class="flap-arrow">→</span><div class="flap target">PNG</div>
+      <span style="width:14px"></span>
+      <div class="flap">MOV</div><span class="flap-arrow">→</span><div class="flap target">MP4</div>
+    </div>
+  </div>
+
+  <div class="board-label">
+    <span>TABLERO DE CONVERSIÓN</span>
+    <span id="countLabel">0 archivos</span>
+  </div>
+  <div class="queue" id="queue">
+    <div class="empty" id="emptyMsg">Aún no hay archivos en cola — arrastra o selecciona arriba.</div>
+  </div>
+
+  <footer>
+    <span>Calidad original preservada (remux sin recodificar cuando es posible)</span>
+    <span>Procesamiento 100% local, en tu navegador</span>
+  </footer>
+
+</div>
+
+<script type="module">
+import heic2any from 'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/+esm';
+import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js';
+import { fetchFile, toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.2/dist/esm/index.js';
+
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const queue = document.getElementById('queue');
+let emptyMsg = document.getElementById('emptyMsg');
+const countLabel = document.getElementById('countLabel');
+
+const TARGET_MAP = { heic:'PNG', heif:'PNG', mov:'MP4', m4v:'MP4' };
+let fileCount = 0;
+
+let ffmpegInstance = null;
+let ffmpegLoadingPromise = null;
+
+async function getFFmpeg(){
+  if (ffmpegInstance) return ffmpegInstance;
+  if (!ffmpegLoadingPromise){
+    ffmpegLoadingPromise = (async () => {
+      const ffmpeg = new FFmpeg();
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
+      ffmpegInstance = ffmpeg;
+      return ffmpeg;
+    })();
+  }
+  return ffmpegLoadingPromise;
+}
+
+async function convertHeicToPng(file){
+  const result = await heic2any({ blob: file, toType: 'image/png' });
+  return Array.isArray(result) ? result[0] : result;
+}
+
+async function convertMovToMp4(file, onProgress){
+  const ffmpeg = await getFFmpeg();
+  const inputName = 'in_' + Date.now() + '.mov';
+  const outputName = 'out_' + Date.now() + '.mp4';
+
+  const onProg = ({ progress }) => onProgress(Math.min(Math.max(progress * 100, 0), 99));
+  ffmpeg.on('progress', onProg);
+
+  await ffmpeg.writeFile(inputName, await fetchFile(file));
+
+  try {
+    // Paso 1: remux — solo cambia el contenedor, cero pérdida de calidad
+    await ffmpeg.exec(['-y', '-i', inputName, '-c', 'copy', outputName]);
+  } catch (e) {
+    // Paso 2 (respaldo): si el códec no es compatible con MP4, recodifica en calidad muy alta
+    await ffmpeg.exec(['-y', '-i', inputName, '-c:v', 'libx264', '-crf', '16', '-preset', 'slow', '-c:a', 'aac', '-b:a', '192k', outputName]);
+  }
+
+  const data = await ffmpeg.readFile(outputName);
+  ffmpeg.off('progress', onProg);
+  await ffmpeg.deleteFile(inputName);
+  await ffmpeg.deleteFile(outputName);
+
+  return new Blob([data.buffer], { type: 'video/mp4' });
+}
+
+dropzone.addEventListener('click', () => fileInput.click());
+['dragenter','dragover'].forEach(evt =>
+  dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.add('drag'); })
+);
+['dragleave','drop'].forEach(evt =>
+  dropzone.addEventListener(evt, e => { e.preventDefault(); dropzone.classList.remove('drag'); })
+);
+dropzone.addEventListener('drop', e => handleFiles(e.dataTransfer.files));
+fileInput.addEventListener('change', e => handleFiles(e.target.files));
+
+function handleFiles(fileList){
+  if (!fileList.length) return;
+  if (emptyMsg) { emptyMsg.remove(); emptyMsg = null; }
+  [...fileList].forEach(addRow);
+}
+
+function addRow(file){
+  const ext = file.name.split('.').pop().toLowerCase();
+  const target = TARGET_MAP[ext] || '—';
+  const sizeMB = (file.size / (1024*1024)).toFixed(1);
+
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `
+    <div>
+      <div class="name">${file.name}</div>
+      <div class="size">${sizeMB} MB</div>
+    </div>
+    <div class="fmt-flow">
+      <span class="from">${ext.toUpperCase()}</span><span>→</span><span class="to">${target}</span>
+    </div>
+    <div class="bar-track"><div class="bar-fill"></div></div>
+    <div class="status"><span class="pct">0%</span></div>
+  `;
+  queue.appendChild(row);
+  fileCount++;
+  countLabel.textContent = fileCount + (fileCount === 1 ? ' archivo' : ' archivos');
+
+  processFile(row, file, ext);
+}
+
+async function processFile(row, file, ext){
+  const fill = row.querySelector('.bar-fill');
+  const pct = row.querySelector('.pct');
+  const statusEl = row.querySelector('.status');
+  const setProgress = (p) => { fill.style.width = p + '%'; pct.textContent = Math.floor(p) + '%'; };
+
+  try {
+    let outBlob, outName;
+
+    if (ext === 'heic' || ext === 'heif'){
+      setProgress(20);
+      outBlob = await convertHeicToPng(file);
+      outName = file.name.replace(/\.(heic|heif)$/i, '.png');
+    } else if (ext === 'mov' || ext === 'm4v'){
+      if (!ffmpegInstance) pct.textContent = 'cargando motor…';
+      outBlob = await convertMovToMp4(file, setProgress);
+      outName = file.name.replace(/\.(mov|m4v)$/i, '.mp4');
+    } else {
+      outBlob = file;
+      outName = file.name;
+    }
+
+    setProgress(100);
+    row.classList.add('done');
+    const url = URL.createObjectURL(outBlob);
+    statusEl.innerHTML = '';
+    const btn = document.createElement('button');
+    btn.className = 'btn-dl';
+    btn.textContent = 'Descargar';
+    btn.onclick = () => {
+      const a = document.createElement('a');
+      a.href = url; a.download = outName; a.click();
+    };
+    statusEl.appendChild(btn);
+  } catch (err){
+    console.error(err);
+    row.classList.add('error');
+    statusEl.innerHTML = '<span style="color:var(--error-red)">Error</span>';
+  }
+}
+</script>
+</body>
+</html>
