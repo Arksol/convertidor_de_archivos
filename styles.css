@@ -185,7 +185,7 @@
   .btn-primary{background:var(--steel-blue); border-color:var(--steel-blue); color:#fff;}
   .btn-primary:hover{background:#3f7edc;}
   .toolbar{display:flex; gap:10px; flex-wrap:wrap; margin-top:16px;}
-  .err-msg{color:var(--error-red); font-size:10px; max-width:220px; text-align:right; white-space:normal; line-height:1.4;}
+  .err-msg{color:var(--error-red); font-size:10px; max-width:320px; text-align:right; white-space:normal; line-height:1.4;}
   .empty{padding:28px 6px; color:var(--ink-dim); font-family:var(--mono); font-size:12px; text-align:center;}
   footer{
     margin-top:44px;

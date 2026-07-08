@@ -20,6 +20,9 @@ const IMG = new Set(['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif']);
 const FFMPEG_IMG = new Set(['tif', 'tiff']);
 const VID = new Set(['mov', 'm4v', 'mp4', 'webm', 'avi', 'mkv']);
 const MIME = { png:'image/png', jpeg:'image/jpeg', webp:'image/webp' };
+const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1']);
+const VIDEO_BRANDS = new Set(['qt  ', 'isom', 'iso2', 'mp41', 'mp42', 'm4v ', 'avc1', 'dash']);
+const VIDEO_BOXES = new Set(['ftyp', 'moov', 'mdat', 'free', 'wide']);
 
 let HeicTo, FFmpegCtor, fetchFile, toBlobURL, JSZipCtor;
 let libsReady = false, libsFailed = false, libsPromise = null, zipPromise = null;
@@ -32,7 +35,10 @@ function bannerText(msg, append = false){
 }
 function errText(err){ return err?.message || String(err || 'Error desconocido'); }
 function extOf(name){ const i = String(name || '').lastIndexOf('.'); return i >= 0 ? name.slice(i + 1).toLowerCase() : ''; }
-function baseName(name){ return String(name || 'archivo').replace(/\.[^.]+$/, ''); }
+function baseName(name){
+  const cleaned = String(name || 'archivo').replace(/\.[^.]+$/, '').replace(/^\.+/, '');
+  return cleaned || 'archivo';
+}
 function fmtBytes(bytes){
   const units = ['B', 'KB', 'MB', 'GB']; let n = bytes || 0, i = 0;
   while (n >= 1024 && i < units.length - 1){ n /= 1024; i++; }
@@ -41,6 +47,49 @@ function fmtBytes(bytes){
 function kind(ext){ if (HEIC.has(ext) || IMG.has(ext) || FFMPEG_IMG.has(ext)) return 'image'; if (VID.has(ext)) return 'video'; return 'bad'; }
 function supported(ext){ return kind(ext) !== 'bad'; }
 function outputName(fileName, ext){ return kind(ext) === 'video' ? `${baseName(fileName)}.mp4` : `${baseName(fileName)}.${imageOutput.value}`; }
+function ascii(bytes, start, length){
+  if (bytes.length < start + length) return '';
+  return String.fromCharCode(...bytes.slice(start, start + length));
+}
+function brandsFromFtyp(bytes){
+  if (ascii(bytes, 4, 4) !== 'ftyp') return [];
+  const brands = [ascii(bytes, 8, 4)];
+  for (let i = 16; i + 4 <= bytes.length; i += 4) brands.push(ascii(bytes, i, 4));
+  return brands.filter(Boolean);
+}
+function isHeifHeader(bytes){ return brandsFromFtyp(bytes).some(brand => HEIF_BRANDS.has(brand)); }
+function isVideoHeader(bytes){
+  const box = ascii(bytes, 4, 4);
+  if (!VIDEO_BOXES.has(box)) return false;
+  if (box !== 'ftyp') return true;
+  return brandsFromFtyp(bytes).some(brand => VIDEO_BRANDS.has(brand) || brand.startsWith('3g'));
+}
+function livePhotoName(name){ return /(^|[._-])live\.(heic|heif|mov|m4v)$/i.test(String(name || '')); }
+async function fileHeader(file, length = 64){
+  return new Uint8Array(await file.slice(0, length).arrayBuffer());
+}
+async function validateSignature(file, ext){
+  if (file.size < 16) throw new Error('El archivo esta incompleto o vacio.');
+  if (!HEIC.has(ext) && !VID.has(ext)) return;
+  const header = await fileHeader(file);
+  if (HEIC.has(ext) && !isHeifHeader(header)) {
+    throw new Error('El contenido no parece un HEIC/HEIF valido aunque el nombre termine en .HEIC. Si viene de una Live Photo, exporta la foto desde iPhone/iCloud como imagen normal o prueba con el .MOV asociado.');
+  }
+  if (VID.has(ext) && !isVideoHeader(header)) {
+    throw new Error('El contenido no parece un video MOV/MP4 valido aunque el nombre termine en .MOV. Si viene de una Live Photo, vuelve a exportar el par desde iPhone/iCloud y selecciona el .MOV original.');
+  }
+}
+function conversionMessage(item, err){
+  const msg = errText(err);
+  if (/El contenido no parece|incompleto|vacio/i.test(msg)) return msg;
+  if (HEIC.has(item.ext) && /HEIF image not found|libheif|format not supported|invalid|heic|heif/i.test(msg)) {
+    return 'No se pudo leer este HEIC. Si es Live Photo, prueba tambien con el archivo .MOV asociado o exporta la foto desde iPhone/iCloud como imagen normal.';
+  }
+  if (VID.has(item.ext) && /moov atom not found|Invalid data|could not find codec|unsupported|error opening/i.test(msg)) {
+    return 'No se pudo leer este MOV. Si es parte de una Live Photo, vuelve a exportar el video original desde iPhone/iCloud y prueba otra vez.';
+  }
+  return msg;
+}
 function loadScript(src){
   return new Promise((resolve, reject) => {
     const old = [...document.scripts].find(s => s.src === src);
@@ -192,7 +241,7 @@ async function videoToMp4(file, ext, ffmpeg, progress){
 function setProgress(item, p){ item.fill.style.width = `${p}%`; item.pct.textContent = `${Math.floor(p)}%`; }
 function setError(item, msg){
   item.state = 'error'; item.row.classList.remove('queued'); item.row.classList.add('error'); item.status.textContent = '';
-  const span = document.createElement('span'); span.className = 'err-msg'; span.textContent = msg.slice(0, 90); span.title = msg; item.status.appendChild(span);
+  const span = document.createElement('span'); span.className = 'err-msg'; span.textContent = msg.slice(0, 180); span.title = msg; item.status.appendChild(span);
 }
 function button(label, cls, fn){ const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = label; b.addEventListener('click', fn); return b; }
 function updateCounters(){
@@ -231,7 +280,13 @@ function makeRow(file, ext){
   item.row.className = 'row queued';
   const info = document.createElement('div'), name = document.createElement('div'), size = document.createElement('div');
   name.className = 'name'; name.textContent = file.name; size.className = 'size'; size.textContent = fmtBytes(file.size); info.append(name, size);
-  if (HEIC.has(ext)) { const note = document.createElement('div'); note.className = 'note'; note.textContent = 'iPhone HEIC detectado; la parte Live Photo no se convierte aquí.'; info.appendChild(note); }
+  if (HEIC.has(ext)) {
+    const note = document.createElement('div'); note.className = 'note';
+    note.textContent = livePhotoName(file.name) ? 'Live Photo HEIC detectado; si falla, agrega el .MOV asociado o exporta la foto normal.' : 'iPhone HEIC detectado; la parte Live Photo no se convierte aqui.';
+    info.appendChild(note);
+  } else if (VID.has(ext) && livePhotoName(file.name)) {
+    const note = document.createElement('div'); note.className = 'note'; note.textContent = 'MOV de Live Photo detectado; se convertira a MP4.'; info.appendChild(note);
+  }
   const flow = document.createElement('div'); flow.className = 'fmt-flow';
   const from = document.createElement('span'), arrow = document.createElement('span'), to = document.createElement('span');
   from.className = 'from'; from.textContent = ext ? ext.toUpperCase() : 'SIN EXT'; arrow.textContent = '→'; to.className = 'to'; to.textContent = kind(ext) === 'video' ? 'MP4' : imageOutput.value.toUpperCase(); flow.append(from, arrow, to);
@@ -247,6 +302,7 @@ function handleFiles(list){
 async function processFile(item){
   if (!supported(item.ext)) { setError(item, 'Formato no soportado. Usa HEIC, HEIF, JPG, PNG, WEBP, BMP, GIF, TIFF, MOV, MP4, M4V, WEBM, AVI o MKV.'); return updateCounters(); }
   try {
+    await validateSignature(item.file, item.ext);
     await loadLibs(); item.state = 'processing'; item.row.classList.remove('queued'); item.status.textContent = 'convirtiendo…'; setProgress(item, 5);
     let out;
     if (HEIC.has(item.ext)) out = await scheduleImage(() => { setProgress(item, 35); return heicToImage(item.file); });
@@ -258,9 +314,7 @@ async function processFile(item){
     item.status.textContent = ''; item.status.append(button('Descargar', 'btn btn-dl', () => downloadItem(item.id)), button('Borrar', 'btn btn-danger', () => removeItem(item.id)));
     if (out.warning) bannerText(`${out.warning} Archivo: ${item.outputName}`, true);
   } catch (err) {
-    let msg = errText(err);
-    if (HEIC.has(item.ext) && /libheif|format not supported|invalid|heic/i.test(msg)) msg = 'HEIC no compatible o dañado. Si es Live Photo, el movimiento suele venir como .MOV aparte.';
-    setError(item, msg);
+    setError(item, conversionMessage(item, err));
   } finally { updateCounters(); }
 }
 
