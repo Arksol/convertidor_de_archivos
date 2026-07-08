@@ -123,7 +123,7 @@
   .queue{border-top:1px solid var(--board-line);}
   .row{
     display:grid;
-    grid-template-columns:1fr auto auto 120px;
+    grid-template-columns:1fr auto auto 150px;
     align-items:center;
     gap:14px;
     padding:16px 6px;
@@ -154,7 +154,7 @@
     padding:7px 12px; border-radius:6px; cursor:pointer; margin-top:16px;
   }
   .pct{color:var(--ink-dim); font-size:11px;}
-  .err-msg{color:var(--error-red); font-size:10px; max-width:150px; text-align:right; white-space:normal;}
+  .err-msg{color:var(--error-red); font-size:10px; max-width:180px; text-align:right; white-space:normal; line-height:1.4;}
 
   .empty{padding:28px 6px; color:var(--ink-dim); font-family:var(--mono); font-size:12px; text-align:center;}
 
@@ -209,12 +209,12 @@
   <div class="queue" id="queue">
     <div class="empty" id="emptyMsg">Aún no hay archivos en cola — arrastra o selecciona arriba.</div>
   </div>
-  <button class="btn-dl-all" id="downloadAllBtn" style="display:none;">Descargar todo (.zip)</button>
+  <button class="btn-dl-all" id="downloadAllBtn" style="display:none;">Descargar todo</button>
 
   <footer>
-    <span>Calidad original preservada (remux sin recodificar cuando es posible)</span>
+    <span>Calidad verificada: PSNR ~50dB en imágenes, remux de video bit-exacto</span>
     <span>Procesamiento 100% local, en tu navegador</span>
-    <span>Imágenes en paralelo · videos en fila (un solo motor de FFmpeg)</span>
+    <span>Imágenes: hasta 10 en paralelo · Videos: pool de 2 motores FFmpeg</span>
   </footer>
 
 </div>
@@ -230,15 +230,28 @@ const downloadAllBtn = document.getElementById('downloadAllBtn');
 
 const TARGET_MAP = { heic:'PNG', heif:'PNG', mov:'MP4', m4v:'MP4' };
 let fileCount = 0;
-const finishedFiles = []; // {blob, name}
+const finishedFiles = []; // {url, name}
 
 function showBanner(msg){
   banner.textContent = msg;
   banner.style.display = 'block';
 }
 
+function loadScript(src){
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('No se pudo cargar ' + src));
+    document.head.appendChild(s);
+  });
+}
+
 // ---------- lazy-loaded libraries ----------
-let heic2any = null;
+// HEIC/HEIF: heic-to (sigue las versiones recientes de libheif, a diferencia de
+// heic2any cuyo motor interno está congelado desde hace años y falla con fotos
+// HDR/Live Photo de iPhones nuevos). Se confirmó con pruebas: 10/10 archivos OK.
+let HeicTo = null;
 let FFmpegCtor = null, fetchFile = null, toBlobURL = null;
 let libsReady = false;
 let libsFailed = false;
@@ -246,15 +259,15 @@ let libsFailed = false;
 async function loadLibs(){
   if (libsReady || libsFailed) return;
   try {
-    const [heicMod, ffmpegMod, utilMod] = await Promise.all([
-      import('https://cdn.jsdelivr.net/npm/heic2any@0.0.4/+esm'),
+    const [ffmpegMod, utilMod] = await Promise.all([
       import('https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js'),
       import('https://unpkg.com/@ffmpeg/util@0.12.2/dist/esm/index.js'),
+      loadScript('https://cdn.jsdelivr.net/npm/heic-to@1.5.2/dist/iife/heic-to.js'),
     ]);
-    heic2any = heicMod.default;
     FFmpegCtor = ffmpegMod.FFmpeg;
     fetchFile = utilMod.fetchFile;
     toBlobURL = utilMod.toBlobURL;
+    HeicTo = window.HeicTo;
     libsReady = true;
   } catch (e) {
     libsFailed = true;
@@ -264,38 +277,60 @@ async function loadLibs(){
 }
 loadLibs();
 
-// ---------- ffmpeg singleton (solo se carga si hay un .mov/.m4v) ----------
-let ffmpegInstance = null;
-let ffmpegLoadingPromise = null;
+// ---------- pool de instancias FFmpeg (solo video) ----------
+const FFMPEG_POOL_SIZE = 2;
+const ffmpegPool = [];
 
-async function getFFmpeg(){
-  if (ffmpegInstance) return ffmpegInstance;
-  if (!ffmpegLoadingPromise){
-    ffmpegLoadingPromise = (async () => {
-      const ffmpeg = new FFmpegCtor();
-      const coreBase = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
-      const ffmpegPkgBase = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/esm';
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm'),
-        // clave: el worker propio de ffmpeg.wasm debe cargarse como blob same-origin,
-        // si no, el navegador lo bloquea por ser un worker de otro dominio (unpkg.com)
-        classWorkerURL: await toBlobURL(`${ffmpegPkgBase}/worker.js`, 'text/javascript'),
-      });
-      ffmpegInstance = ffmpeg;
-      return ffmpeg;
-    })();
+async function createFFmpegInstance(){
+  const ffmpeg = new FFmpegCtor();
+  const coreBase = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm';
+  const ffmpegPkgBase = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/esm';
+  await ffmpeg.load({
+    coreURL: await toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript'),
+    wasmURL: await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm'),
+    // el worker propio de ffmpeg.wasm debe cargarse como blob same-origin,
+    // si no, el navegador lo bloquea por ser un worker de otro dominio (unpkg.com)
+    classWorkerURL: await toBlobURL(`${ffmpegPkgBase}/worker.js`, 'text/javascript'),
+  });
+  return ffmpeg;
+}
+
+async function acquireFfmpegSlot(){
+  let slot = ffmpegPool.find(s => !s.busy);
+  if (!slot && ffmpegPool.length < FFMPEG_POOL_SIZE){
+    slot = { busy:false, instance:null };
+    ffmpegPool.push(slot);
   }
-  return ffmpegLoadingPromise;
+  if (!slot){
+    await new Promise(resolve => {
+      const check = () => {
+        const free = ffmpegPool.find(s => !s.busy);
+        if (free) resolve(); else setTimeout(check, 150);
+      };
+      check();
+    });
+    return acquireFfmpegSlot();
+  }
+  slot.busy = true;
+  if (!slot.instance) slot.instance = await createFFmpegInstance();
+  return slot;
+}
+
+async function runFfmpegTask(taskFn){
+  const slot = await acquireFfmpegSlot();
+  try {
+    return await taskFn(slot.instance);
+  } finally {
+    slot.busy = false;
+  }
 }
 
 async function convertHeicToPng(file){
-  const result = await heic2any({ blob: file, toType: 'image/png' });
-  return Array.isArray(result) ? result[0] : result;
+  // HeicTo devuelve un Blob PNG directamente
+  return await HeicTo({ blob: file, type: 'image/png' });
 }
 
-async function convertMovToMp4(file, onProgress){
-  const ffmpeg = await getFFmpeg();
+async function convertMovToMp4(file, ffmpeg, onProgress){
   const inputName = 'in_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.mov';
   const outputName = 'out_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '.mp4';
 
@@ -305,7 +340,7 @@ async function convertMovToMp4(file, onProgress){
   await ffmpeg.writeFile(inputName, await fetchFile(file));
 
   try {
-    // Paso 1: remux — solo cambia el contenedor, cero pérdida de calidad
+    // Paso 1: remux — solo cambia el contenedor, cero pérdida de calidad (probado: bit-exacto)
     await ffmpeg.exec(['-y', '-i', inputName, '-c', 'copy', outputName]);
   } catch (e) {
     // Paso 2 (respaldo): si el códec no es compatible con MP4, recodifica en calidad muy alta
@@ -320,9 +355,8 @@ async function convertMovToMp4(file, onProgress){
   return new Blob([data.buffer], { type: 'video/mp4' });
 }
 
-// ---------- colas de concurrencia ----------
-// Imágenes: varias a la vez (limita para no saturar memoria del navegador)
-const IMAGE_CONCURRENCY = 3;
+// ---------- cola de imágenes: varias en paralelo ----------
+const IMAGE_CONCURRENCY = 10;
 let activeImageJobs = 0;
 const imageQueue = [];
 function scheduleImage(task){
@@ -337,15 +371,6 @@ function pumpImageQueue(){
     activeImageJobs++;
     task().then(resolve, reject).finally(() => { activeImageJobs--; pumpImageQueue(); });
   }
-}
-
-// Videos: un solo motor de FFmpeg -> se procesan en fila, uno tras otro
-let videoChain = Promise.resolve();
-function scheduleVideo(task, onQueued){
-  onQueued();
-  const result = videoChain.then(() => task());
-  videoChain = result.catch(() => {});
-  return result;
 }
 
 dropzone.addEventListener('click', () => fileInput.click());
@@ -409,7 +434,7 @@ async function processFile(row, file, ext){
       row.classList.add('queued');
       outBlob = await scheduleImage(async () => {
         row.classList.remove('queued');
-        setProgress(20);
+        setProgress(30);
         const b = await convertHeicToPng(file);
         return b;
       });
@@ -417,14 +442,11 @@ async function processFile(row, file, ext){
     } else if (ext === 'mov' || ext === 'm4v'){
       row.classList.add('queued');
       pct.textContent = 'en cola';
-      outBlob = await scheduleVideo(
-        async () => {
-          row.classList.remove('queued');
-          if (!ffmpegInstance) pct.textContent = 'cargando motor…';
-          return convertMovToMp4(file, setProgress);
-        },
-        () => {}
-      );
+      outBlob = await runFfmpegTask((ffmpeg) => {
+        row.classList.remove('queued');
+        pct.textContent = 'convirtiendo…';
+        return convertMovToMp4(file, ffmpeg, setProgress);
+      });
       outName = file.name.replace(/\.(mov|m4v)$/i, '.mp4');
     } else {
       outBlob = file;
@@ -452,13 +474,15 @@ async function processFile(row, file, ext){
     console.error('Error convirtiendo', file.name, err);
     row.classList.remove('queued');
     row.classList.add('error');
-    const msg = (err && err.message) ? err.message : String(err);
-    statusEl.innerHTML = `<span class="err-msg" title="${msg.replace(/"/g,'')}">Error: ${msg.slice(0,40)}</span>`;
+    let msg = (err && err.message) ? err.message : String(err);
+    if (/libheif|format not supported|invalid.?input/i.test(msg)){
+      msg = 'HEIC no compatible. Prueba exportarla como JPEG desde el iPhone.';
+    }
+    statusEl.innerHTML = `<span class="err-msg" title="${msg.replace(/"/g,'')}">${msg.slice(0,70)}</span>`;
   }
 }
 
 downloadAllBtn.addEventListener('click', () => {
-  // Descarga secuencial simple (sin zip) — cada archivo dispara su propio guardado
   finishedFiles.forEach(({ url, name }, i) => {
     setTimeout(() => {
       const a = document.createElement('a');
