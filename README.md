@@ -1,37 +1,74 @@
-# Convertidor HEIC/MOV → PNG/MP4
+# Convertidor local de archivos
 
-Convertidor de archivos que corre 100% en el navegador (sin backend, sin subir archivos a ningún servidor).
+Convertidor de archivos que corre en el navegador. No usa backend y no sube los archivos a un servidor propio: la conversión ocurre en el dispositivo del usuario después de cargar los motores desde CDN.
 
-- **HEIC/HEIF → PNG** usando [`heic-to`](https://github.com/hoppergee/heic-to) (envuelve `libheif`, actualizado a la versión 1.22.x — a diferencia de `heic2any`, que usa una compilación congelada desde hace años y falla con fotos HDR/Live Photo de iPhones recientes). Hasta **10 imágenes en paralelo**. Probado con 10/10 archivos exitosos, PSNR promedio ~50.7dB contra el original.
-- **MOV/M4V → MP4** usando [`ffmpeg.wasm`](https://github.com/ffmpegwasm/ffmpeg.wasm). Primero intenta un *remux* (`-c copy`, cambia solo el contenedor, cero recodificación — probado bit-exacto en 10/10 archivos). Si el códec no es compatible con MP4, recodifica en calidad muy alta (`-crf 16`) como respaldo. Pool de **2 motores en paralelo**.
+## Conversiones principales
+
+- **HEIC/HEIF → PNG/JPEG/WEBP** con `heic-to@1.5.2`, basado en `libheif`. La salida recomendada es **PNG** para conservar la mejor calidad visual posible después de decodificar el HEIC original.
+- **MOV/M4V/MP4/WEBM/AVI/MKV → MP4** con `ffmpeg.wasm`. Primero intenta **remux** con `-c copy` para evitar pérdida de calidad. Si el contenedor/códec no es compatible con MP4, recodifica a **H.264/AAC** con `CRF 16`.
+
+## Formatos aceptados
+
+Imágenes:
+
+- HEIC
+- HEIF
+- JPG/JPEG
+- PNG
+- WEBP
+- BMP
+- GIF
+- TIFF/TIF
+
+Video:
+
+- MOV
+- M4V
+- MP4
+- WEBM
+- AVI
+- MKV
 
 ## Uso
 
-Abre `index.html` directamente en el navegador (doble clic) o publícalo en GitHub Pages. No necesita instalación ni build — las librerías se cargan desde CDN bajo demanda.
+Abre `index.html` directamente en el navegador o publícalo en GitHub Pages.
+
+1. Elige la salida de imágenes: PNG, JPEG o WEBP.
+2. Arrastra o selecciona hasta **30 archivos**.
+3. Espera a que termine cada conversión.
+4. Descarga cada archivo o usa **Descargar todo (.zip)**.
+5. Borra archivos convertidos con **Borrar**, **Borrar descargados** o activa **Borrar de la cola después de descargar**.
 
 ## Estructura
 
-```
-proyecto-convertidor/
-├── index.html   ← toda la app (UI + lógica de conversión)
+```txt
+convertidor_de_archivos/
+├── index.html
+├── styles.css
+├── app.js
 ├── README.md
 └── docs/
-    ├── debug-report.md         ← bugs encontrados y cómo se resolvieron
-    ├── pruebas-de-calidad.md   ← metodología y resultados de las pruebas con 10 archivos
-    ├── deploy-checklist.md     ← pasos para publicar y verificar
-    └── system-design.md        ← arquitectura y decisiones de diseño
+    └── pruebas-locales.md
 ```
 
-## Notas técnicas
+## Cambios técnicos incluidos
 
-- La primera vez que se convierte un `.mov`, el navegador descarga el motor de `ffmpeg.wasm` (~25-30 MB por instancia del pool). Se queda en caché para las siguientes veces.
-- **Fix cross-origin**: `ffmpeg.wasm` crea un worker interno. Si se carga desde un CDN mientras la página vive en otro dominio (ej. GitHub Pages), el navegador lo bloquea por política de mismo origen. Se soluciona pasando `classWorkerURL` como blob (ver `createFFmpegInstance()` en `index.html`).
-- **HEIC**: se probó exhaustivamente que el fallback anterior (usar FFmpeg para HEIC difíciles) no servía — el build estándar de FFmpeg no tiene soporte HEIF. Ver `docs/debug-report.md` para el detalle.
-- Videos muy grandes (varios GB) pueden ser lentos o consumir mucha memoria — es una limitación conocida de correr FFmpeg en WebAssembly, no de esta app.
-- Todo el procesamiento ocurre en el dispositivo del usuario. Ningún archivo sale de su equipo.
+- Validación estricta de formatos soportados.
+- Límite de 30 archivos por lote para evitar saturar memoria.
+- Cola de imágenes con hasta 10 conversiones en paralelo.
+- Pool de 2 instancias de FFmpeg para videos y TIFF.
+- Carga única de librerías mediante `libsPromise` para evitar cargas duplicadas.
+- Código separado en `index.html`, `styles.css` y `app.js`.
+- Limpieza con `finally` en FFmpeg para quitar listeners de progreso y archivos temporales.
+- Uso de `textContent` para nombres de archivo, evitando inyección HTML por nombres maliciosos.
+- `URL.revokeObjectURL()` al borrar archivos convertidos para liberar memoria.
+- Descarga múltiple real con `JSZip`, en vez de disparar muchas descargas individuales.
 
-## Próximos pasos posibles
+## Limitaciones conocidas
 
-- Empaquetar "Descargar todo" como un .zip real (con `jszip`) en vez de descargas individuales.
-- Mostrar comparación de tamaño antes/después.
-- Opción de elegir calidad (JPEG con `quality` en vez de PNG sin pérdida).
+- PNG no añade pérdida visual, pero **no garantiza conservar metadata** del HEIC original, como EXIF, ubicación, HDR, profundidad o Live Photo.
+- En iPhone, una Live Photo suele tener imagen `.HEIC` y movimiento `.MOV`. Un archivo como `IMG_2033-live.HEIC` se convierte como imagen; el movimiento debe convertirse desde el `.MOV` correspondiente.
+- GIF se convierte como imagen fija; no conserva animación.
+- TIFF usa FFmpeg y puede tardar más.
+- Videos grandes pueden consumir mucha memoria porque `ffmpeg.wasm` corre dentro del navegador.
+- La app necesita internet la primera vez para cargar librerías desde CDN.
